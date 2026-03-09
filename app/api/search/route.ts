@@ -8,7 +8,6 @@ export const maxDuration = 120;
 
 export async function POST(req: NextRequest) {
   try {
-    // Auth check
     const supabase = createServerSupabaseClient();
     const { data: { user }, error: authError } = await supabase.auth.getUser();
     if (authError || !user) {
@@ -27,41 +26,30 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Città non trovata" }, { status: 404 });
     }
 
-    // Trova coordinate per la ricerca
     let lat = city.lat;
     let lng = city.lng;
     let radius = city.defaultRadius;
     let neighborhoodLabel = neighborhood || city.label;
 
     if (neighborhood) {
-      const hood = city.neighborhoods.find(
-        (n) => n.name === neighborhood
-      );
+      const hood = city.neighborhoods.find((n) => n.name === neighborhood);
       if (hood) {
         lat = hood.lat;
         lng = hood.lng;
         radius = hood.radius;
         neighborhoodLabel = hood.name;
       } else {
-        // Zona libera inserita manualmente → usa centro città con raggio default
         neighborhoodLabel = neighborhood;
       }
     }
 
     const serviceRole = createServiceRoleClient();
 
-    // ── CACHE CHECK ──────────────────────────────────────────────────────
-    // Cerca ricerche simili nelle ultime 48h
     if (!forceRefresh) {
       const cutoff = new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString();
       const { data: cachedSearch } = await supabase
         .from("searches")
-        .select(`
-          id, results_count, leads_count, created_at,
-          search_results (
-            places (*)
-          )
-        `)
+        .select("id, results_count, leads_count, created_at, search_results (places (*))")
         .eq("city", cityName)
         .eq("neighborhood", neighborhoodLabel)
         .ilike("category", category)
@@ -75,7 +63,6 @@ export async function POST(req: NextRequest) {
           .map((sr: { places: unknown }) => sr.places)
           .filter(Boolean);
 
-        // Salva nuova ricerca che punta agli stessi place
         const { data: newSearch } = await supabase
           .from("searches")
           .insert({
@@ -92,20 +79,14 @@ export async function POST(req: NextRequest) {
 
         if (newSearch) {
           await serviceRole.from("search_results").insert(
-            places.map((p: { id: string }) => ({ search_id: newSearch.id, place_id: p.id }))
+            places.map((p: unknown) => ({ search_id: newSearch.id, place_id: (p as { id: string }).id }))
           );
         }
 
-        return NextResponse.json({
-          places,
-          fromCache: true,
-          searchId: newSearch?.id,
-          cachedAt: cachedSearch.created_at,
-        });
+        return NextResponse.json({ places, fromCache: true, searchId: newSearch?.id, cachedAt: cachedSearch.created_at });
       }
     }
 
-    // ── LIVE SEARCH ──────────────────────────────────────────────────────
     const results = await searchPlaces({
       category,
       cityLabel: city.label,
@@ -117,7 +98,6 @@ export async function POST(req: NextRequest) {
       onlyWithoutWebsite: true,
     });
 
-    // Salva ricerca nel DB
     const { data: newSearch, error: searchErr } = await supabase
       .from("searches")
       .insert({
@@ -134,31 +114,27 @@ export async function POST(req: NextRequest) {
 
     if (searchErr) throw searchErr;
 
-    // Upsert places e search_results
     const savedPlaces: unknown[] = [];
     for (const place of results) {
       const { data: savedPlace } = await serviceRole
         .from("places")
-        .upsert(
-          {
-            place_id: place.place_id,
-            name: place.name,
-            address: place.address,
-            phone: place.phone,
-            category: place.category,
-            primary_type: place.primary_type,
-            rating: place.rating,
-            reviews_count: place.reviews_count,
-            website: place.website,
-            lat: place.lat,
-            lng: place.lng,
-            city: cityName,
-            neighborhood: neighborhoodLabel,
-            maps_url: place.maps_url,
-            last_updated_at: new Date().toISOString(),
-          },
-          { onConflict: "place_id" }
-        )
+        .upsert({
+          place_id: place.place_id,
+          name: place.name,
+          address: place.address,
+          phone: place.phone,
+          category: place.category,
+          primary_type: place.primary_type,
+          rating: place.rating,
+          reviews_count: place.reviews_count,
+          website: place.website,
+          lat: place.lat,
+          lng: place.lng,
+          city: cityName,
+          neighborhood: neighborhoodLabel,
+          maps_url: place.maps_url,
+          last_updated_at: new Date().toISOString(),
+        }, { onConflict: "place_id" })
         .select()
         .single();
 
@@ -171,11 +147,7 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    return NextResponse.json({
-      places: savedPlaces.length > 0 ? savedPlaces : results,
-      fromCache: false,
-      searchId: newSearch.id,
-    });
+    return NextResponse.json({ places: savedPlaces.length > 0 ? savedPlaces : results, fromCache: false, searchId: newSearch.id });
   } catch (err) {
     console.error("Search error:", err);
     const message = err instanceof Error ? err.message : "Errore interno";
