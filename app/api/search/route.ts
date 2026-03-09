@@ -84,7 +84,7 @@ export async function POST(req: NextRequest) {
             neighborhood: neighborhoodLabel,
             category,
             results_count: places.length,
-            leads_count: places.filter((p: { has_website: boolean }) => !p.has_website).length,
+            leads_count: places.filter((p: unknown) => !(p as { has_website: boolean }).has_website).length,
             from_cache: true,
           })
           .select()
